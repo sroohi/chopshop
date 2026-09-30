@@ -1,2 +1,6 @@
 build/
 JUCE/
+
+# Test harness output
+chopshop_render.wav
+chopshop_ui.png
