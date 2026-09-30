@@ -101,6 +101,37 @@ inline std::vector<int> transients (const SampleData& s, float sensitivity, int 
     return out;
 }
 
+/** Tempo of a loop: taken from the file name when it carries one (e.g. "loop_90_Gmin"),
+    otherwise the tempo that makes the sample a whole number of 4/4 bars closest to 100 BPM. */
+inline double estimateBpm (const SampleData& s)
+{
+    if (s.isDemo)
+        return 92.0;
+    const auto tokens = juce::StringArray::fromTokens (s.name, "_- ().", "");
+    for (int pass = 0; pass < 2; ++pass) // explicit "...bpm" tokens first, then bare numbers
+        for (auto& t : tokens)
+        {
+            const auto lower = t.toLowerCase();
+            if (pass == 0 && ! lower.endsWith ("bpm"))
+                continue;
+            const auto tok = lower.upToFirstOccurrenceOf ("bpm", false, false);
+            if (tok.isNotEmpty() && tok.containsOnly ("0123456789.") && tok.getDoubleValue() >= 60.0 && tok.getDoubleValue() <= 200.0)
+                return tok.getDoubleValue();
+        }
+    const double secs = s.length() / s.sampleRate;
+    double best = 100.0, bestDist = 1.0e9;
+    for (int bars : { 1, 2, 4, 8, 16 })
+    {
+        const double bpm = 240.0 * bars / secs;
+        if (bpm >= 60.0 && bpm <= 180.0 && std::abs (bpm - 100.0) < bestDist)
+        {
+            best = bpm;
+            bestDist = std::abs (bpm - 100.0);
+        }
+    }
+    return best;
+}
+
 /** Sorts, de-duplicates and bounds a user-edited list of slice points. */
 inline std::vector<int> sanitise (std::vector<int> v, int length)
 {

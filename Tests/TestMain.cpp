@@ -142,6 +142,75 @@ int main (int argc, char** argv)
         std::cout << "  wrote " << wavFile.getFullPathName() << std::endl;
     }
 
+    std::cout << "== Master limiter" << std::endl;
+    {
+        ChopShopProcessor lp;
+        lp.prepareToPlay (sr, block);
+        check (lp.getLatencySamples() == (int) std::round (sr * 0.0015), "limiter latency reported to host: " + juce::String (lp.getLatencySamples()) + " samples");
+        setParam (lp, "master", 12.0f);
+        setParam (lp, "limOn", 1.0f);
+        setParam (lp, "limCeil", -1.0f);
+        setParam (lp, "drvOn", 1.0f);
+        setParam (lp, "drvAmt", 0.8f);
+        setParam (lp, "toneOn", 1.0f);
+        setParam (lp, "toneTilt", 0.6f);
+        setParam (lp, "toneLow", 80.0f);
+        float peak2 = 0.0f, gr = 0.0f;
+        bool finite2 = true;
+        for (int b = 0; b < (int) (3.0 * sr / block); ++b)
+        {
+            juce::AudioBuffer<float> x (2, block);
+            juce::MidiBuffer m;
+            if (b % 20 == 0)
+                for (int pad = 0; pad < 4; ++pad)
+                    m.addEvent (juce::MidiMessage::noteOn (1, 36 + pad, (juce::uint8) 127), 0);
+            lp.processBlock (x, m);
+            peak2 = juce::jmax (peak2, x.getMagnitude (0, block));
+            gr = juce::jmax (gr, lp.gainReduction.load());
+            for (int i = 0; i < block; ++i)
+                finite2 &= std::isfinite (x.getSample (0, i)) && std::isfinite (x.getSample (1, i));
+        }
+        check (finite2, "saturation + tone + limiter output is finite");
+        check (peak2 <= juce::Decibels::decibelsToGain (-1.0f) + 1.0e-4f, "limiter holds -1 dB ceiling with +12 dB master (peak " + juce::String (juce::Decibels::gainToDecibels (peak2), 2) + " dBFS)");
+        check (gr > 3.0f, "limiter is working (max GR " + juce::String (gr, 1) + " dB)");
+    }
+
+    std::cout << "== Time-stretch" << std::endl;
+    {
+        auto lengthOfHit = [&] (bool stretchOn, float ratio, float tune)
+        {
+            ChopShopProcessor sp;
+            sp.prepareToPlay (sr, block);
+            setParam (sp, "limOn", 0.0f);
+            setParam (sp, "strOn", stretchOn ? 1.0f : 0.0f);
+            setParam (sp, "strMode", 0.0f);
+            setParam (sp, "strRatio", ratio);
+            setParam (sp, "p1_tune", tune);
+            setParam (sp, "sliceMode", 0.0f);
+            setParam (sp, "sliceCount", 4.0f);
+            sp.rechop (true);
+            juce::AudioBuffer<float> all (2, (int) (6.0 * sr));
+            all.clear();
+            for (int pos = 0; pos + block <= all.getNumSamples(); pos += block)
+            {
+                juce::AudioBuffer<float> x (2, block);
+                juce::MidiBuffer m;
+                if (pos == 0) m.addEvent (juce::MidiMessage::noteOn (1, 36, (juce::uint8) 127), 0);
+                sp.processBlock (x, m);
+                all.copyFrom (0, pos, x, 0, 0, block);
+            }
+            int last = 0;
+            for (int i = 0; i < all.getNumSamples(); ++i)
+                if (std::abs (all.getSample (0, i)) > 1.0e-4f) last = i;
+            return last / sr;
+        };
+        const double plain = lengthOfHit (false, 1.0f, 0.0f);
+        const double slow = lengthOfHit (true, 2.0f, 0.0f);
+        const double pitchedUp = lengthOfHit (true, 1.0f, 12.0f);
+        check (std::abs (slow / plain - 2.0) < 0.1, "stretch x2 doubles slice length (" + juce::String (plain, 3) + " s -> " + juce::String (slow, 3) + " s)");
+        check (std::abs (pitchedUp / plain - 1.0) < 0.1, "stretch keeps length when tuned +12 st (" + juce::String (pitchedUp, 3) + " s)");
+    }
+
     std::cout << "== Slicer & kit editing" << std::endl;
     {
         setParam (proc, "sliceMode", 0.0f);
@@ -212,14 +281,20 @@ int main (int argc, char** argv)
     std::cout << "== Editor snapshot" << std::endl;
     {
         proc.loadDemo();
+        setParam (proc, "halfOn", 0.0f);
+        setParam (proc, "stopOn", 0.0f);
+        setParam (proc, "stutOn", 1.0f);
+        setParam (proc, "revOn", 1.0f);
+        setParam (proc, "drvOn", 1.0f);
         std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
+        ed->setSize (MainView::W, MainView::H);
         juce::MessageManager::getInstance()->runDispatchLoopUntil (1500); // library scan + kit refresh
         auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
         auto png = outDir.getChildFile ("chopshop_ui.png");
         png.deleteFile();
         juce::FileOutputStream fos (png);
         juce::PNGImageFormat().writeImageToStream (img, fos);
-        check (img.getWidth() == 1460, "editor rendered " + juce::String (img.getWidth()) + "x" + juce::String (img.getHeight()));
+        check (img.getWidth() == MainView::W, "editor rendered " + juce::String (img.getWidth()) + "x" + juce::String (img.getHeight()));
         std::cout << "  wrote " << png.getFullPathName() << std::endl;
     }
 

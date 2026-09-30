@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <juce_dsp/juce_dsp.h>
 #include <array>
 #include <cmath>
 #include <vector>
@@ -676,6 +677,265 @@ private:
     float hold[2] {};
     OnePoleLP recon[2];
     juce::SmoothedValue<float> amount;
+};
+
+//==============================================================================
+/** Saturation with three curves. Uses first-order antiderivative anti-aliasing (ADAA)
+    instead of oversampling, so it adds no latency. */
+class Drive
+{
+public:
+    void prepare (double sampleRate)
+    {
+        sr = sampleRate;
+        mixS.reset (sr, 0.02);
+        mixS.setCurrentAndTargetValue (0.0f);
+        gainS.reset (sr, 0.03);
+        gainS.setCurrentAndTargetValue (1.0f);
+        for (int c = 0; c < 2; ++c)
+        {
+            xPrev[c] = 0.0f;
+            dc[c].reset();
+            dc[c].setCutoff (8.0f, sr);
+        }
+    }
+
+    void process (float* L, float* R, int n, bool on, float amount, int type, float mix)
+    {
+        mixS.setTargetValue (on ? mix : 0.0f);
+        if (! on && ! mixS.isSmoothing())
+        {
+            xPrev[0] = L[n - 1];
+            xPrev[1] = R[n - 1];
+            return;
+        }
+
+        curve = juce::jlimit (0, 2, type);
+        gainS.setTargetValue (juce::Decibels::decibelsToGain (amount * 30.0f));
+        float* ch[2] { L, R };
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = gainS.getNextValue();
+            const float comp = 0.25f / shape (0.25f * g); // a -12 dBFS input comes out at the same level
+            const float m = mixS.getNextValue();
+            for (int c = 0; c < 2; ++c)
+            {
+                const float x = ch[c][i] * g;
+                const float y = dc[c].process (adaa (x, xPrev[c])) * comp;
+                xPrev[c] = x;
+                ch[c][i] = ch[c][i] * (1.0f - m) + y * m;
+            }
+        }
+    }
+
+private:
+    static constexpr float tubeBias = 0.35f;
+
+    static float logCosh (float x) noexcept
+    {
+        const float a = std::abs (x);
+        return a + std::log1p (std::exp (-2.0f * a)) - 0.6931472f;
+    }
+
+    float shape (float x) const noexcept
+    {
+        switch (curve)
+        {
+            case 1:  return std::tanh (x + tubeBias) - std::tanh (tubeBias);
+            case 2:  return juce::jlimit (-1.0f, 1.0f, x);
+            default: return std::tanh (x);
+        }
+    }
+
+    float antiderivative (float x) const noexcept
+    {
+        switch (curve)
+        {
+            case 1:  return logCosh (x + tubeBias) - x * std::tanh (tubeBias);
+            case 2:  return std::abs (x) <= 1.0f ? 0.5f * x * x : std::abs (x) - 0.5f;
+            default: return logCosh (x);
+        }
+    }
+
+    float adaa (float x, float x1) const noexcept
+    {
+        const float d = x - x1;
+        if (std::abs (d) < 1.0e-4f)
+            return shape (0.5f * (x + x1));
+        return (antiderivative (x) - antiderivative (x1)) / d;
+    }
+
+    double sr = 44100.0;
+    int curve = 0;
+    float xPrev[2] {};
+    OnePoleHP dc[2];
+    juce::SmoothedValue<float> mixS, gainS;
+};
+
+//==============================================================================
+/** Tilt EQ around 1 kHz plus low-cut and high-cut filters. */
+class ToneEQ
+{
+public:
+    void prepare (double sampleRate)
+    {
+        sr = sampleRate;
+        juce::dsp::ProcessSpec spec { sr, 4096, 1 };
+        for (auto& chain : filters)
+            for (auto& f : chain)
+            {
+                // Start every stage as a second-order filter so later coefficient updates never resize state.
+                f.coefficients = new juce::dsp::IIR::Coefficients<float> (1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+                f.prepare (spec);
+                f.reset();
+            }
+        lastTilt = lastLow = lastHigh = -1000.0f;
+        wasOn = false;
+    }
+
+    void process (float* L, float* R, int n, bool on, float tilt, float lowHz, float highHz)
+    {
+        if (! on)
+        {
+            wasOn = false;
+            return;
+        }
+        if (! wasOn)
+            for (auto& chain : filters)
+                for (auto& f : chain)
+                    f.reset();
+        wasOn = true;
+
+        if (tilt != lastTilt || lowHz != lastLow || highHz != lastHigh)
+        {
+            lastTilt = tilt;
+            lastLow = lowHz;
+            lastHigh = highHz;
+            using C = juce::dsp::IIR::ArrayCoefficients<float>; // no allocation on the audio thread
+            const float gdb = tilt * 6.0f;
+            auto lowShelf = C::makeLowShelf (sr, 700.0f, 0.6f, juce::Decibels::decibelsToGain (-gdb));
+            auto highShelf = C::makeHighShelf (sr, 1400.0f, 0.6f, juce::Decibels::decibelsToGain (gdb));
+            auto hp = C::makeHighPass (sr, juce::jmax (10.0f, lowHz), 0.707f);
+            auto lp = C::makeLowPass (sr, juce::jmin (highHz, (float) sr * 0.45f), 0.707f);
+            for (auto& chain : filters)
+            {
+                *chain[0].coefficients = lowShelf;
+                *chain[1].coefficients = highShelf;
+                *chain[2].coefficients = hp;
+                *chain[3].coefficients = lp;
+            }
+        }
+
+        const bool useLow = lowHz > 21.0f, useHigh = highHz < 19900.0f, useTilt = std::abs (tilt) > 0.005f;
+        float* ch[2] { L, R };
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < n; ++i)
+            {
+                float x = ch[c][i];
+                if (useTilt) x = filters[c][1].processSample (filters[c][0].processSample (x));
+                if (useLow)  x = filters[c][2].processSample (x);
+                if (useHigh) x = filters[c][3].processSample (x);
+                ch[c][i] = x;
+            }
+    }
+
+private:
+    double sr = 44100.0;
+    std::array<std::array<juce::dsp::IIR::Filter<float>, 4>, 2> filters;
+    float lastTilt = -1000.0f, lastLow = -1000.0f, lastHigh = -1000.0f;
+    bool wasOn = false;
+};
+
+//==============================================================================
+/** Lookahead brickwall limiter: sliding-minimum gain with instant attack, smooth release,
+    and a box filter over the lookahead window so gain changes never click. The signal is
+    always delayed by the lookahead (reported to the host as latency), even when bypassed. */
+class Limiter
+{
+public:
+    void prepare (double sampleRate)
+    {
+        sr = sampleRate;
+        look = juce::jmax (1, (int) std::round (sr * 0.0015));
+        delay.prepare (look + 8);
+        box.assign ((size_t) look, 1.0f);
+        boxSum = (double) look;
+        boxIdx = 0;
+        cap = look + 4;
+        dqVal.assign ((size_t) cap, 1.0f);
+        dqT.assign ((size_t) cap, 0);
+        dqHead = dqCount = 0;
+        t = 0;
+        env = 1.0f;
+        relCoef = 1.0f - std::exp (-1.0f / (float) (0.08 * sr));
+    }
+
+    int getLatency() const { return look; }
+
+    /** Returns the lowest gain applied during the block. */
+    float process (float* L, float* R, int n, bool on, float ceilingDb)
+    {
+        const float ceiling = juce::Decibels::decibelsToGain (ceilingDb);
+        float minGain = 1.0f;
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float peak = juce::jmax (std::abs (L[i]), std::abs (R[i]));
+            const float req = on && peak > ceiling ? ceiling / peak : 1.0f;
+            delay.push (L[i], R[i]);
+
+            const float held = slidingMin (req);
+            env = held < env ? held : env + (held - env) * relCoef;
+
+            boxSum += (double) env - (double) box[(size_t) boxIdx];
+            box[(size_t) boxIdx] = env;
+            if (++boxIdx >= look) boxIdx = 0;
+            const float g = juce::jmin (1.0f, (float) (boxSum / look));
+
+            float l = delay.at (0, look) * g;
+            float r = delay.at (1, look) * g;
+            if (on)
+            {
+                l = juce::jlimit (-ceiling, ceiling, l); // safety for float rounding
+                r = juce::jlimit (-ceiling, ceiling, r);
+            }
+            L[i] = l;
+            R[i] = r;
+            minGain = juce::jmin (minGain, g);
+        }
+        return minGain;
+    }
+
+private:
+    // Minimum of the last (look + 1) required-gain values, via a monotonic queue.
+    float slidingMin (float v)
+    {
+        while (dqCount > 0 && dqVal[(size_t) back()] >= v)
+            --dqCount;
+        const int slot = (dqHead + dqCount) % cap;
+        dqVal[(size_t) slot] = v;
+        dqT[(size_t) slot] = t;
+        ++dqCount;
+        while (dqT[(size_t) dqHead] <= t - (look + 1))
+        {
+            dqHead = (dqHead + 1) % cap;
+            --dqCount;
+        }
+        ++t;
+        return dqVal[(size_t) dqHead];
+    }
+
+    int back() const { return (dqHead + dqCount - 1) % cap; }
+
+    double sr = 44100.0;
+    int look = 64, boxIdx = 0, cap = 1, dqHead = 0, dqCount = 0;
+    juce::int64 t = 0;
+    Ring delay;
+    std::vector<float> box, dqVal;
+    std::vector<juce::int64> dqT;
+    double boxSum = 0.0;
+    float env = 1.0f, relCoef = 0.001f;
 };
 
 } // namespace fx

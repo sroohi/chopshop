@@ -2,21 +2,28 @@
 
 namespace
 {
-constexpr int editorW = 1460, editorH = 780;
-constexpr int libX = 16, libW = 244;
-constexpr int ox = libX + libW + 16;   // main area left edge
-constexpr int rx = ox + 780;           // right column left edge
-constexpr int top = 64;
+constexpr int libX = 16, libW = 236;
+constexpr int colX = libX + libW + 16;   // monitor + pads column
+constexpr int colW = 560;
+constexpr int boxX = colX + colW + 16;   // module boxes
+constexpr int boxW = 312, boxH = 386, gap = 12;
+constexpr int top = 80;
 
-// Computer-keyboard pad layout, top row to bottom row (like the MPC software).
+const juce::Rectangle<int> monitorBounds { colX, top, colW, 320 };
+
+// Computer-keyboard pad layout, bottom row to top row (like the MPC software).
 const char padKeys[16] { 'Z', 'X', 'C', 'V', 'A', 'S', 'D', 'F', 'Q', 'W', 'E', 'R', '1', '2', '3', '4' };
 } // namespace
 
-ChopShopEditor::ChopShopEditor (ChopShopProcessor& p)
-    : AudioProcessorEditor (&p), proc (p), library (p), wave (p), pads (p)
+MainView::MainView (ChopShopProcessor& p)
+    : proc (p), library (p), wave (p), pads (p)
 {
-    setLookAndFeel (&lnf);
     auto& s = proc.apvts;
+    auto show = [this] (std::initializer_list<juce::Component*> comps)
+    {
+        for (auto* c : comps)
+            addAndMakeVisible (c);
+    };
 
     // Top bar
     loadBtn.onClick = [this]
@@ -32,90 +39,79 @@ ChopShopEditor::ChopShopEditor (ChopShopProcessor& p)
     };
     demoBtn.onClick = [this] { proc.loadDemo(); };
     demoBtn.setTooltip ("Reload the built-in demo break");
-    for (auto* l : { &info, &bpmLabel })
-    {
-        l->setColour (juce::Label::textColourId, ui::col::text);
-        l->setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (*l);
-    }
-    info.setFont (ui::font (13.0f));
-    bpmLabel.setFont (ui::font (13.0f, true));
-    bpmLabel.setJustificationType (juce::Justification::centred);
+    attachButton (limOn, "limOn");
+    limOn.getProperties().set ("wide", true);
+    limOn.setTooltip ("Lookahead brickwall limiter on the master output (1.5 ms latency)");
+    limCeil.attach (s, "limCeil");
     master.attach (s, "master");
-    for (auto* c : std::initializer_list<juce::Component*> { &loadBtn, &demoBtn, &master, &library })
-        addAndMakeVisible (c);
+    master.slider.setColour (juce::Slider::rotarySliderFillColourId, ui::col::amber);
+    show ({ &loadBtn, &demoBtn, &limCeil, &master, &library });
 
-    // Sample / slicer
-    addAndMakeVisible (wave);
+    // Monitor
     wave.onSelectPad = [this] (int pad) { bindPad (pad); };
+    att.attach (s, "attack");
+    dec.attach (s, "decay");
+    sus.attach (s, "sustain");
+    rel.attach (s, "release");
+    show ({ &wave, &padTune, &padLevel, &padPan, &padMode, &padRev, &att, &dec, &sus, &rel });
+
+    addAndMakeVisible (pads);
+    pads.onSelectPad = [this] (int pad) { bindPad (pad); };
+
+    // MAIN
+    attachButton (halfOn, "halfOn");
+    attachButton (strOn, "strOn");
+    halfLen.attach (s, "halfLen");
+    halfMix.attach (s, "halfMix");
+    strMode.attach (s, "strMode");
+    strRatio.attach (s, "strRatio");
+    strBpm.attach (s, "strBpm");
+    strGrain.attach (s, "strGrain");
     sliceMode.attach (s, "sliceMode");
     sliceCount.attach (s, "sliceCount");
     sliceSens.attach (s, "sliceSens");
     shuffleBtn.onClick = [this] { proc.shuffleSlices(); };
     resetMapBtn.onClick = [this] { proc.resetSliceMap(); };
     rechopBtn.onClick = [this] { proc.rechop (true); };
+    halfOn.setTooltip ("Half-time: each window plays at half speed, an octave down (MIDI C#0 = momentary)");
+    strOn.setTooltip ("Time-stretch the chopped sample without changing pitch. SYNC follows the host tempo from SRC BPM.");
     shuffleBtn.setTooltip ("Randomly re-assign slices to pads");
     resetMapBtn.setTooltip ("Slice 1 on pad 1, slice 2 on pad 2...");
     rechopBtn.setTooltip ("Chop again with the current settings (discards manual marker edits)");
-    sliceHint.setText ("Drag markers to move  |  Double-click to add  |  Right-click to delete  |  Click a slice to play it",
-                       juce::dontSendNotification);
-    sliceHint.setFont (ui::font (11.0f));
-    sliceHint.setColour (juce::Label::textColourId, ui::col::dim);
-    sliceHint.setJustificationType (juce::Justification::centredRight);
-    for (auto* c : std::initializer_list<juce::Component*> { &sliceMode, &sliceCount, &sliceSens, &shuffleBtn, &resetMapBtn, &rechopBtn, &sliceHint })
-        addAndMakeVisible (c);
+    mainBox.addSection ("HALF-TIME", &halfOn, { &halfLen, &halfMix }, 2);
+    mainBox.addSection ("STRETCH", &strOn, { &strMode, &strRatio, &strBpm, &strGrain }, 4);
+    mainBox.addSection ("SLICER", nullptr, { &sliceMode, &sliceCount, &sliceSens, &shuffleBtn, &resetMapBtn, &rechopBtn }, 3);
 
-    // Pads
-    addAndMakeVisible (pads);
-    pads.onSelectPad = [this] (int pad) { bindPad (pad); };
-    for (auto* c : std::initializer_list<juce::Component*> { &padTune, &padLevel, &padPan, &padMode, &padRev })
-        addAndMakeVisible (c);
-
-    att.attach (s, "attack");
-    dec.attach (s, "decay");
-    sus.attach (s, "sustain");
-    rel.attach (s, "release");
-    for (auto* c : std::initializer_list<juce::Component*> { &att, &dec, &sus, &rel })
-        addAndMakeVisible (c);
-
+    // FX
+    attachButton (widOn, "widOn");
+    attachButton (widBass, "widBass");
     attachButton (rndOn, "rndOn");
+    attachButton (stutOn, "stutOn");
+    attachButton (stopOn, "stopOn");
+    widBass.getProperties().set ("wide", true);
+    widWidth.attach (s, "widWidth");
+    widHaas.attach (s, "widHaas");
     rndPitch.attach (s, "rndPitch");
     rndPan.attach (s, "rndPan");
     rndLevel.attach (s, "rndLevel");
     rndRev.attach (s, "rndRev");
     rndSlice.attach (s, "rndSlice");
-    for (auto* c : std::initializer_list<juce::Component*> { &rndPitch, &rndPan, &rndLevel, &rndRev, &rndSlice })
-        addAndMakeVisible (c);
-
-    // Performance
-    for (auto* b : { &stutBtn, &halfBtn, &stopBtn })
-    {
-        b->setClickingTogglesState (true);
-        b->getProperties().set ("perf", true);
-    }
-    attachButton (stutBtn, "stutOn");
-    attachButton (halfBtn, "halfOn");
-    attachButton (stopBtn, "stopOn");
-    stutBtn.setTooltip ("Beat repeat, synced to the host tempo (MIDI note C0 = momentary)");
-    halfBtn.setTooltip ("Half-speed playback of each window, an octave down (MIDI note C#0 = momentary)");
-    stopBtn.setTooltip ("Tape/turntable stop, pitch winds down to zero (MIDI note D0 = momentary)");
     stutRate.attach (s, "stutRate");
     stutGate.attach (s, "stutGate");
     stutMix.attach (s, "stutMix");
-    halfLen.attach (s, "halfLen");
-    halfMix.attach (s, "halfMix");
     stopTime.attach (s, "stopTime");
     stopCurve.attach (s, "stopCurve");
     stopSpin.attach (s, "stopSpin");
-    for (auto* c : std::initializer_list<juce::Component*> { &stutRate, &stutGate, &stutMix, &halfLen, &halfMix, &stopTime, &stopCurve, &stopSpin })
-        addAndMakeVisible (c);
+    stutOn.setTooltip ("Beat repeat, synced to the host tempo (MIDI C0 = momentary)");
+    stopOn.setTooltip ("Tape stop: pitch winds down to zero (MIDI D0 = momentary)");
+    fxBox.addSection ("WIDENER", &widOn, { &widWidth, &widHaas, &widBass }, 3);
+    fxBox.addSection ("RANDOMIZER", &rndOn, { &rndPitch, &rndPan, &rndLevel, &rndRev, &rndSlice }, 5);
+    fxBox.addSection ("STUTTER", &stutOn, { &stutRate, &stutGate, &stutMix }, 3);
+    fxBox.addSection ("TAPE STOP", &stopOn, { &stopTime, &stopCurve, &stopSpin }, 3);
 
-    // FX
+    // EFFECT
     attachButton (dlyOn, "dlyOn");
     attachButton (revOn, "revOn");
-    attachButton (widOn, "widOn");
-    attachButton (widBass, "widBass");
-    attachButton (vinOn, "vinOn");
     dlyTime.attach (s, "dlyTime");
     dlyFb.attach (s, "dlyFb");
     dlyWow.attach (s, "dlyWow");
@@ -128,44 +124,52 @@ ChopShopEditor::ChopShopEditor (ChopShopProcessor& p)
     revTone.attach (s, "revTone");
     revWow.attach (s, "revWow");
     revMix.attach (s, "revMix");
-    widWidth.attach (s, "widWidth");
-    widHaas.attach (s, "widHaas");
+    effectBox.addSection ("TAPE DELAY", &dlyOn, { &dlyTime, &dlyFb, &dlyWow, &dlyTone, &dlyAge, &dlyMix }, 3);
+    effectBox.addSection ("TAPE REVERB", &revOn, { &revSize, &revDecay, &revPre, &revTone, &revWow, &revMix }, 3);
+
+    // DRIVE
+    attachButton (drvOn, "drvOn");
+    attachButton (toneOn, "toneOn");
+    attachButton (vinOn, "vinOn");
+    drvAmt.attach (s, "drvAmt");
+    drvType.attach (s, "drvType");
+    drvMix.attach (s, "drvMix");
+    toneTilt.attach (s, "toneTilt");
+    toneLow.attach (s, "toneLow");
+    toneHigh.attach (s, "toneHigh");
     vinBits.attach (s, "vinBits");
     vinRate.attach (s, "vinRate");
-    for (auto* c : std::initializer_list<juce::Component*> { &dlyTime, &dlyFb, &dlyWow, &dlyTone, &dlyAge, &dlyMix, &revSize, &revDecay,
-                                                             &revPre, &revTone, &revWow, &revMix, &widWidth, &widHaas, &vinBits, &vinRate })
-        addAndMakeVisible (c);
+    driveBox.addSection ("SATURATION", &drvOn, { &drvAmt, &drvType, &drvMix }, 3);
+    driveBox.addSection ("TONE", &toneOn, { &toneTilt, &toneLow, &toneHigh }, 3);
+    driveBox.addSection ("LO-FI", &vinOn, { &vinBits, &vinRate }, 2);
 
-    // Choice/bipolar knob colours
-    for (auto* k : { &sliceMode, &padMode, &stutRate, &halfLen, &dlyTime })
-        k->slider.setColour (juce::Slider::rotarySliderFillColourId, ui::col::amber);
+    show ({ &mainBox, &fxBox, &effectBox, &driveBox });
 
-    for (auto* c : getChildren())
-        if (dynamic_cast<juce::Button*> (c) != nullptr)
-            c->setWantsKeyboardFocus (false);
+    for (auto* b : std::initializer_list<juce::Button*> { &loadBtn, &demoBtn, &shuffleBtn, &resetMapBtn, &rechopBtn, &padRev })
+        b->setWantsKeyboardFocus (false);
+    for (auto& a : buttonAtts)
+        juce::ignoreUnused (a);
 
-    setWantsKeyboardFocus (true);
-    setSize (editorW, editorH);
-
+    setSize (W, H);
     bindPad (proc.getSelectedPad());
     proc.addChangeListener (this);
     refreshKit();
     startTimerHz (30);
 }
 
-ChopShopEditor::~ChopShopEditor()
+MainView::~MainView()
 {
     proc.removeChangeListener (this);
-    setLookAndFeel (nullptr);
 }
 
-void ChopShopEditor::attachButton (juce::Button& b, const juce::String& id)
+void MainView::attachButton (juce::Button& b, const juce::String& id)
 {
     buttonAtts.push_back (std::make_unique<APVTS::ButtonAttachment> (proc.apvts, id, b));
+    b.setWantsKeyboardFocus (false);
     addAndMakeVisible (b);
 }
 
-void ChopShopEditor::bindPad (int pad)
+void MainView::bindPad (int pad)
 {
     auto& s = proc.apvts;
     padTune.attach (s, params::padId (pad, "tune"));
@@ -175,47 +179,35 @@ void ChopShopEditor::bindPad (int pad)
     padRevAtt.reset();
     padRevAtt = std::make_unique<APVTS::ButtonAttachment> (s, params::padId (pad, "rev"), padRev);
     wave.repaint();
-    repaint();
+    repaint (monitorBounds);
 }
 
-void ChopShopEditor::refreshKit()
+void MainView::refreshKit()
 {
     auto k = proc.getKit();
     wave.setKit (k);
     pads.setKit (k);
-
-    if (k != nullptr && k->main != nullptr)
-    {
-        const double secs = k->main->length() / k->main->sampleRate;
-        info.setText (k->main->name + "     " + juce::String (secs, 2) + " s     " + juce::String (k->numSlices()) + " slices",
-                      juce::dontSendNotification);
-    }
-    else
-        info.setText ("No sample loaded", juce::dontSendNotification);
+    repaint();
 }
 
-void ChopShopEditor::changeListenerCallback (juce::ChangeBroadcaster*) { refreshKit(); }
+void MainView::changeListenerCallback (juce::ChangeBroadcaster*) { refreshKit(); }
 
-void ChopShopEditor::timerCallback()
+void MainView::timerCallback()
 {
     wave.refreshPlayhead();
-    bpmLabel.setText (juce::String (proc.currentBpm.load(), 1) + " BPM", juce::dontSendNotification);
 
-    juce::TextButton* perf[] { &stutBtn, &halfBtn, &stopBtn };
-    for (int i = 0; i < 3; ++i)
-    {
-        const bool active = proc.perfActive[i].load();
-        if ((bool) perf[i]->getProperties()["active"] != active)
-        {
-            perf[i]->getProperties().set ("active", active);
-            perf[i]->repaint();
-        }
-    }
+    // Meters: fast attack, ~300 ms fall.
+    auto fall = [] (float current, float target) { return target > current ? target : current * 0.86f; };
+    meterL = fall (meterL, proc.outPeak[0].exchange (0.0f));
+    meterR = fall (meterR, proc.outPeak[1].exchange (0.0f));
+    meterGr = fall (meterGr, proc.gainReduction.load());
+    repaint (0, 0, W, 68);
+    repaint (monitorBounds.withHeight (32));
 }
 
-bool ChopShopEditor::keyStateChanged (bool)
+bool MainView::handleKeys()
 {
-    if (dynamic_cast<juce::TextEditor*> (getCurrentlyFocusedComponent()) != nullptr)
+    if (dynamic_cast<juce::TextEditor*> (juce::Component::getCurrentlyFocusedComponent()) != nullptr)
         return false;
 
     bool used = false;
@@ -240,166 +232,192 @@ bool ChopShopEditor::keyStateChanged (bool)
 }
 
 //==============================================================================
-void ChopShopEditor::layoutKnobs (juce::Rectangle<int> area, std::initializer_list<juce::Component*> comps)
+void MainView::resized()
 {
-    const int w = area.getWidth() / (int) comps.size();
-    for (auto* c : comps)
-        c->setBounds (area.removeFromLeft (w).reduced (3, 0));
+    // Top bar
+    loadBtn.setBounds (colX, 18, 80, 32);
+    demoBtn.setBounds (colX + 86, 18, 64, 32);
+    master.setBounds (W - 16 - 66, 2, 66, 64);
+    limCeil.setBounds (W - 16 - 66 - 104, 14, 96, 42);
+    limOn.setBounds (W - 16 - 66 - 104 - 96, 14, 88, 20);
+
+    library.setBounds (libX + 10, top + 30, libW - 20, H - top - 16 - 40);
+
+    // Monitor: screen with header, waveform and the selected pad's settings.
+    {
+        auto screen = monitorBounds.reduced (10);
+        screen.removeFromTop (24);
+        wave.setBounds (screen.removeFromTop (160));
+        screen.removeFromTop (8);
+        auto row1 = screen.removeFromTop (44);
+        auto row2 = screen.withTrimmedTop (6).withHeight (44);
+        const int cw = row1.getWidth() / 5;
+        for (auto* c : std::initializer_list<juce::Component*> { &padTune, &padLevel, &padPan, &padMode })
+            c->setBounds (row1.removeFromLeft (cw).reduced (2, 0));
+        padRev.setBounds (row1.reduced (4, 11));
+        const int cw2 = row2.getWidth() / 4;
+        for (auto* c : std::initializer_list<juce::Component*> { &att, &dec, &sus, &rel })
+            c->setBounds (row2.removeFromLeft (cw2).reduced (2, 0));
+    }
+
+    pads.setBounds (juce::Rectangle<int> (colX, top + 320 + 12, colW, H - (top + 320 + 12) - 16).reduced (10));
+
+    mainBox.setBounds (boxX, top, boxW, boxH);
+    fxBox.setBounds (boxX + boxW + gap, top, boxW, boxH);
+    effectBox.setBounds (boxX, top + boxH + gap, boxW, boxH);
+    driveBox.setBounds (boxX + boxW + gap, top + boxH + gap, boxW, boxH);
+}
+
+void MainView::paintMeters (juce::Graphics& g)
+{
+    const int x = W - 16 - 66 - 104 - 96 - 150;
+    g.setFont (ui::font (9.0f, true));
+    auto meter = [&] (int y, const juce::String& label, float lin)
+    {
+        g.setColour (ui::col::dim);
+        g.drawText (label, x, y, 30, 12, juce::Justification::centredLeft);
+        auto r = juce::Rectangle<float> ((float) x + 30.0f, (float) y + 2.0f, 110.0f, 8.0f);
+        g.setColour (ui::col::screen);
+        g.fillRoundedRectangle (r, 2.0f);
+        const float db = juce::Decibels::gainToDecibels (lin, -60.0f);
+        const float frac = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
+        const auto c = db > -0.5f ? ui::col::accent : (db > -6.0f ? ui::col::amber : juce::Colour (0xff4cd07d));
+        g.setColour (c);
+        g.fillRoundedRectangle (r.withWidth (r.getWidth() * frac), 2.0f);
+    };
+    meter (16, "OUT L", meterL);
+    meter (30, "OUT R", meterR);
+
+    // Gain reduction grows from the right, 0..12 dB.
+    g.setColour (ui::col::dim);
+    g.drawText ("GR", x, 44, 30, 12, juce::Justification::centredLeft);
+    auto r = juce::Rectangle<float> ((float) x + 30.0f, 46.0f, 110.0f, 8.0f);
+    g.setColour (ui::col::screen);
+    g.fillRoundedRectangle (r, 2.0f);
+    const float frac = juce::jlimit (0.0f, 1.0f, meterGr / 12.0f);
+    g.setColour (ui::col::accent);
+    g.fillRoundedRectangle (r.withLeft (r.getRight() - r.getWidth() * frac), 2.0f);
+    g.setColour (ui::col::dim);
+    g.drawText (juce::String (meterGr, 1) + " dB", (int) r.getRight() - 110, 44, 104, 12, juce::Justification::centredRight);
+}
+
+void MainView::paint (juce::Graphics& g)
+{
+    juce::ColourGradient chassis (ui::col::chassis.brighter (0.05f), 0.0f, 0.0f, ui::col::bg, 0.0f, (float) H, false);
+    g.setGradientFill (chassis);
+    g.fillAll();
+
+    // Top bar
+    g.setColour (juce::Colours::black.withAlpha (0.3f));
+    g.fillRect (0, 0, W, 68);
+    g.setColour (ui::col::accent);
+    g.fillRect (0, 66, W, 2);
+
+    g.setFont (ui::font (26.0f, true));
+    g.setColour (ui::col::text);
+    g.drawText ("CHOPSHOP", libX, 12, 160, 30, juce::Justification::centredLeft);
+    g.setColour (ui::col::accent);
+    g.setFont (ui::font (13.0f, true));
+    g.drawText ("SP-16", libX + 160, 12, 60, 30, juce::Justification::centredLeft);
+    g.setColour (ui::col::dim);
+    g.setFont (ui::font (9.5f, true));
+    g.drawText ("SAMPLING MACHINE", libX, 38, 200, 14, juce::Justification::centredLeft);
+
+    g.setColour (ui::col::screen);
+    g.fillRoundedRectangle (juce::Rectangle<float> ((float) colX + 162.0f, 16.0f, 398.0f, 36.0f), 5.0f);
+    g.fillRoundedRectangle (juce::Rectangle<float> ((float) boxX, 16.0f, 150.0f, 36.0f), 5.0f);
+    g.setColour (ui::col::dim);
+    g.setFont (ui::font (9.0f, true));
+    g.drawText ("HOST", boxX + 10, 16, 40, 36, juce::Justification::centredLeft);
+    g.setColour (ui::col::text);
+    g.setFont (ui::font (15.0f, true));
+    g.drawText (juce::String (proc.currentBpm.load(), 1) + " BPM", boxX + 40, 16, 104, 36, juce::Justification::centredRight);
+
+    auto k = proc.getKit();
+    g.setFont (ui::font (13.0f, true));
+    g.setColour (ui::col::text);
+    g.drawFittedText (k != nullptr && k->main != nullptr ? k->main->name : juce::String ("No sample loaded"),
+                      colX + 174, 16, 380, 36, juce::Justification::centredLeft, 1, 0.8f);
+
+    paintMeters (g);
+
+    // Library panel frame
+    auto lib = juce::Rectangle<float> ((float) libX, (float) top, (float) libW, (float) (H - top - 16));
+    g.setColour (ui::col::panel);
+    g.fillRoundedRectangle (lib, 9.0f);
+    g.setColour (ui::col::panelEdge);
+    g.drawRoundedRectangle (lib.reduced (0.5f), 9.0f, 1.0f);
+    g.setColour (ui::col::accent);
+    g.fillRoundedRectangle (lib.getX() + 12.0f, lib.getY() + 12.0f, 4.0f, 14.0f, 2.0f);
+    g.setColour (ui::col::text);
+    g.setFont (ui::font (14.0f, true));
+    g.drawText ("LIBRARY", (int) lib.getX() + 24, (int) lib.getY() + 8, 150, 22, juce::Justification::centredLeft);
+
+    // Monitor bezel + screen
+    auto mon = monitorBounds.toFloat();
+    g.setColour (juce::Colour (0xff0e0f11));
+    g.fillRoundedRectangle (mon, 10.0f);
+    g.setColour (ui::col::panelEdge);
+    g.drawRoundedRectangle (mon.reduced (0.5f), 10.0f, 1.2f);
+    g.setColour (ui::col::screen);
+    g.fillRoundedRectangle (mon.reduced (6.0f), 7.0f);
+
+    auto header = monitorBounds.reduced (14, 10).removeFromTop (22);
+    const int sel = proc.getSelectedPad();
+    g.setColour (ui::col::amber);
+    g.setFont (ui::font (12.0f, true));
+    g.drawText ("PAD " + juce::String (sel + 1), header.removeFromLeft (64), juce::Justification::centredLeft);
+    g.setColour (ui::col::dim);
+    g.setFont (ui::font (11.0f, true));
+    if (k != nullptr && k->main != nullptr)
+    {
+        juce::String what;
+        if (auto& ps = k->padSample[(size_t) sel])
+            what = "PAD SAMPLE: " + ps->name;
+        else if (k->padSlice[(size_t) sel] >= 0)
+            what = "SLICE " + juce::String (k->padSlice[(size_t) sel] + 1) + " of " + juce::String (k->numSlices());
+        const auto secs = k->main->length() / k->main->sampleRate;
+        g.drawText (what, header.removeFromLeft (240), juce::Justification::centredLeft);
+        g.drawText (juce::String (secs, 2) + " s   SRC " + juce::String (proc.apvts.getRawParameterValue ("strBpm")->load(), 1) + " BPM",
+                    header, juce::Justification::centredRight);
+    }
+
+    // Pads frame
+    auto padFrame = juce::Rectangle<float> ((float) colX, (float) (top + 332), (float) colW, (float) (H - (top + 332) - 16));
+    g.setColour (ui::col::panel);
+    g.fillRoundedRectangle (padFrame, 9.0f);
+    g.setColour (ui::col::panelEdge);
+    g.drawRoundedRectangle (padFrame.reduced (0.5f), 9.0f, 1.0f);
+}
+
+//==============================================================================
+ChopShopEditor::ChopShopEditor (ChopShopProcessor& p) : AudioProcessorEditor (&p), view (p)
+{
+    setLookAndFeel (&lnf);
+    addAndMakeVisible (view);
+    setWantsKeyboardFocus (true);
+
+    // Start at a size that fits the screen; the window can then be resized freely.
+    float scale = 1.0f;
+    if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+    {
+        const auto area = display->userArea;
+        scale = juce::jmin (1.0f, (float) (area.getWidth() - 40) / (float) MainView::W,
+                            (float) (area.getHeight() - 120) / (float) MainView::H);
+    }
+    setResizable (true, true);
+    setResizeLimits (MainView::W / 2, MainView::H / 2, MainView::W * 2, MainView::H * 2);
+    getConstrainer()->setFixedAspectRatio ((double) MainView::W / (double) MainView::H);
+    setSize (juce::roundToInt (MainView::W * scale), juce::roundToInt (MainView::H * scale));
+}
+
+ChopShopEditor::~ChopShopEditor()
+{
+    setLookAndFeel (nullptr);
 }
 
 void ChopShopEditor::resized()
 {
-    panels.clear();
-    auto addPanel = [this] (juce::Rectangle<int> r, const juce::String& title)
-    {
-        panels.push_back ({ r, title });
-        return r.reduced (10).withTrimmedTop (20);
-    };
-    auto headerButton = [] (juce::Button& b, juce::Rectangle<int> panel, int w = 52)
-    {
-        b.setBounds (panel.getRight() - w - 10, panel.getY() + 8, w, 18);
-    };
-
-    // Top bar
-    loadBtn.setBounds (ox, 14, 80, 30);
-    demoBtn.setBounds (ox + 86, 14, 64, 30);
-    info.setBounds (ox + 164, 14, 600, 30);
-    bpmLabel.setBounds (rx + 150, 14, 110, 30);
-    master.setBounds (editorW - 16 - 64, 2, 60, 58);
-
-    // Library
-    library.setBounds (addPanel ({ libX, top, libW, 700 }, "LIBRARY"));
-
-    // Sample / slicer
-    {
-        auto r = juce::Rectangle<int> (ox, top, 764, 300);
-        auto c = addPanel (r, "SAMPLE  /  SLICER");
-        wave.setBounds (c.removeFromTop (170));
-        c.removeFromTop (6);
-        auto knobs = c.removeFromLeft (216);
-        layoutKnobs (knobs, { &sliceMode, &sliceCount, &sliceSens });
-        c.removeFromLeft (10);
-        auto btns = c.withSizeKeepingCentre (c.getWidth(), 28).withY (c.getY() + 10);
-        shuffleBtn.setBounds (btns.removeFromLeft (92));
-        btns.removeFromLeft (6);
-        resetMapBtn.setBounds (btns.removeFromLeft (100));
-        btns.removeFromLeft (6);
-        rechopBtn.setBounds (btns.removeFromLeft (92));
-        sliceHint.setBounds (c.withTrimmedTop (44).withHeight (20));
-    }
-
-    // Pads
-    {
-        auto r = juce::Rectangle<int> (ox, 372, 392, 392);
-        panels.push_back ({ r, {} });
-        pads.setBounds (r.reduced (8));
-    }
-    {
-        auto r = juce::Rectangle<int> (ox + 400, 372, 364, 124);
-        auto c = addPanel (r, "@PAD");
-        padRev.setBounds (c.getRight() - 82, c.getY() + 26, 82, 22);
-        c.removeFromRight (88);
-        layoutKnobs (c, { &padTune, &padLevel, &padPan, &padMode });
-    }
-    layoutKnobs (addPanel ({ ox + 400, 504, 364, 124 }, "ENVELOPE"), { &att, &dec, &sus, &rel });
-    {
-        auto r = juce::Rectangle<int> (ox + 400, 636, 364, 128);
-        headerButton (rndOn, r);
-        layoutKnobs (addPanel (r, "RANDOMIZER"), { &rndPitch, &rndPan, &rndLevel, &rndRev, &rndSlice });
-    }
-
-    // Performance
-    {
-        auto c = addPanel ({ rx, top, 388, 300 }, "PERFORMANCE");
-        const int rowH = c.getHeight() / 3;
-        struct Row { juce::Button* btn; std::initializer_list<juce::Component*> knobs; };
-        const Row rows[] { { &stutBtn, { &stutRate, &stutGate, &stutMix } },
-                           { &halfBtn, { &halfLen, &halfMix } },
-                           { &stopBtn, { &stopTime, &stopCurve, &stopSpin } } };
-        for (auto& row : rows)
-        {
-            auto rr = c.removeFromTop (rowH);
-            row.btn->setBounds (rr.removeFromLeft (122).withSizeKeepingCentre (116, 58));
-            rr.removeFromLeft (8);
-            auto knobArea = rr.withTrimmedTop (4);
-            const int w = knobArea.getWidth() / 3;
-            for (auto* k : row.knobs)
-                k->setBounds (knobArea.removeFromLeft (w).reduced (4, 0));
-        }
-    }
-
-    // FX
-    {
-        auto r = juce::Rectangle<int> (rx, 372, 388, 124);
-        headerButton (dlyOn, r);
-        layoutKnobs (addPanel (r, "TAPE DELAY"), { &dlyTime, &dlyFb, &dlyWow, &dlyTone, &dlyAge, &dlyMix });
-    }
-    {
-        auto r = juce::Rectangle<int> (rx, 504, 388, 124);
-        headerButton (revOn, r);
-        layoutKnobs (addPanel (r, "TAPE REVERB"), { &revSize, &revDecay, &revPre, &revTone, &revWow, &revMix });
-    }
-    {
-        auto r = juce::Rectangle<int> (rx, 636, 190, 128);
-        headerButton (widOn, r);
-        auto c = addPanel (r, "WIDENER");
-        widBass.setBounds (c.removeFromBottom (20).withSizeKeepingCentre (96, 20));
-        layoutKnobs (c, { &widWidth, &widHaas });
-    }
-    {
-        auto r = juce::Rectangle<int> (rx + 198, 636, 190, 128);
-        headerButton (vinOn, r);
-        layoutKnobs (addPanel (r, "VINTAGE"), { &vinBits, &vinRate });
-    }
-}
-
-void ChopShopEditor::paint (juce::Graphics& g)
-{
-    g.fillAll (ui::col::bg);
-    juce::ColourGradient chassis (ui::col::chassis.brighter (0.05f), 0.0f, 0.0f, ui::col::bg, 0.0f, (float) getHeight(), false);
-    g.setGradientFill (chassis);
-    g.fillRect (getLocalBounds());
-
-    // Top bar
-    auto bar = getLocalBounds().removeFromTop (56).toFloat();
-    g.setColour (juce::Colours::black.withAlpha (0.3f));
-    g.fillRect (bar);
-    g.setColour (ui::col::accent);
-    g.fillRect (bar.removeFromBottom (2.0f).withWidth ((float) getWidth()));
-
-    g.setFont (ui::font (26.0f, true));
-    g.setColour (ui::col::text);
-    g.drawText ("CHOPSHOP", libX, 8, 160, 30, juce::Justification::centredLeft);
-    g.setColour (ui::col::accent);
-    g.setFont (ui::font (13.0f, true));
-    g.drawText ("SP-16", libX + 160, 8, 60, 30, juce::Justification::centredLeft);
-    g.setColour (ui::col::dim);
-    g.setFont (ui::font (9.5f, true));
-    g.drawText ("SAMPLING MACHINE", libX, 34, 200, 14, juce::Justification::centredLeft);
-
-    // Screen-style box behind the sample name and tempo
-    g.setColour (ui::col::screen);
-    g.fillRoundedRectangle (juce::Rectangle<float> ((float) ox + 158.0f, 12.0f, 612.0f, 34.0f), 5.0f);
-    g.fillRoundedRectangle (juce::Rectangle<float> ((float) rx + 146.0f, 12.0f, 118.0f, 34.0f), 5.0f);
-    g.setColour (ui::col::dim);
-    g.setFont (ui::font (9.5f, true));
-    g.drawText ("HOST TEMPO", rx + 40, 14, 100, 30, juce::Justification::centredRight);
-
-    for (auto& p : panels)
-    {
-        auto r = p.bounds.toFloat();
-        g.setColour (ui::col::panel);
-        g.fillRoundedRectangle (r, 8.0f);
-        g.setColour (ui::col::panelEdge);
-        g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.0f);
-        if (p.title.isNotEmpty())
-        {
-            const auto title = p.title == "@PAD" ? "PAD " + juce::String (proc.getSelectedPad() + 1) : p.title;
-            g.setColour (ui::col::accent);
-            g.fillRoundedRectangle (r.getX() + 10.0f, r.getY() + 12.0f, 3.0f, 11.0f, 1.5f);
-            g.setColour (ui::col::text);
-            g.setFont (ui::font (11.5f, true));
-            g.drawText (title, (int) r.getX() + 18, (int) r.getY() + 8, 220, 18, juce::Justification::centredLeft);
-        }
-    }
+    const float scale = (float) getWidth() / (float) MainView::W;
+    view.setTransform (juce::AffineTransform::scale (scale));
 }

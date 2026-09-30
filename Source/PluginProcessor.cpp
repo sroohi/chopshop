@@ -11,6 +11,7 @@ ChopShopProcessor::ChopShopProcessor()
 
     for (auto& g : padGlow) g = 0.0f;
     for (auto& a : perfActive) a = false;
+    for (auto& o : outPeak) o = 0.0f;
 
     for (int i = 0; i < numPads; ++i)
     {
@@ -59,6 +60,10 @@ void ChopShopProcessor::prepareToPlay (double sampleRate, int)
     tapeReverb.prepare (sampleRate);
     tapeStop.prepare (sampleRate);
     widener.prepare (sampleRate);
+    drive.prepare (sampleRate);
+    tone.prepare (sampleRate);
+    limiter.prepare (sampleRate);
+    setLatencySamples (limiter.getLatency());
 
     masterGain.reset (sampleRate, 0.02);
     masterGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (p ("master")->load()));
@@ -84,6 +89,13 @@ void ChopShopProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
             if (auto b = pos->getBpm())
                 bpm = juce::jlimit (20.0, 400.0, *b);
     currentBpm = bpm;
+
+    {
+        const bool sync = p ("strMode")->load() > 0.5f;
+        stretchT = sync ? juce::jlimit (0.25, 4.0, (double) p ("strBpm")->load() / bpm)
+                        : (double) p ("strRatio")->load();
+        grainLen = juce::jmax (64.0f, p ("strGrain")->load() * 0.001f * (float) hostRate);
+    }
 
     uiBuffer.clear();
     uiMidi.removeNextBlockOfMessages (uiBuffer, n);
@@ -140,6 +152,8 @@ void ChopShopProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     perfActive[1] = halfOn;
     perfActive[2] = stopOn;
 
+    drive.process (L, R, n, on ("drvOn"), val ("drvAmt"), idx ("drvType", 2), val ("drvMix"));
+    tone.process (L, R, n, on ("toneOn"), val ("toneTilt"), val ("toneLow"), val ("toneHigh"));
     vintage.process (L, R, n, on ("vinOn"), val ("vinBits"), val ("vinRate"));
     stutter.process (L, R, n, stutOn, params::stutterBeats[idx ("stutRate", 5)] * spb, val ("stutGate"), val ("stutMix"));
     halfTime.process (L, R, n, halfOn, params::halfBeats[idx ("halfLen", 3)] * spb, val ("halfMix"));
@@ -159,6 +173,11 @@ void ChopShopProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     }
 
     renderPreview (L, R, n, pv.get());
+
+    const float minGain = limiter.process (L, R, n, on ("limOn"), val ("limCeil"));
+    gainReduction = -juce::Decibels::gainToDecibels (minGain, -60.0f);
+    outPeak[0] = juce::jmax (outPeak[0].load(), buffer.getMagnitude (0, 0, n));
+    outPeak[1] = juce::jmax (outPeak[1].load(), buffer.getMagnitude (1, 0, n));
 }
 
 void ChopShopProcessor::renderPreview (float* L, float* R, int n, SampleData* s)
@@ -316,6 +335,12 @@ void ChopShopProcessor::triggerPad (int pad, float velocity, int note, float ext
     v->fadeIn = (float) (reg.sample->sampleRate * (reverse ? 0.003 : 0.0004));
     v->fadeOut = (float) (reg.sample->sampleRate * 0.002);
     v->age = ++voiceCounter;
+    v->baseRate = reg.sample->sampleRate / hostRate;
+    v->stretched = p ("strOn")->load() > 0.5f && reg.sample == k.main.get();
+    v->srcPos = v->pos;
+    v->grainRp[0] = v->grainRp[1] = v->pos;
+    v->grainPh[0] = 0.0f;
+    v->grainPh[1] = 0.5f; // grains are staggered by half a grain; phase is in grain lengths
 
     juce::ADSR::Parameters ep;
     ep.attack = p ("attack")->load() * 0.001f;
@@ -335,6 +360,14 @@ void ChopShopProcessor::renderVoices (float* L, float* R, int start, int num)
     {
         if (! v.active)
             continue;
+
+        if (v.stretched)
+        {
+            renderStretched (v, L, R, start, num);
+            if (! v.active)
+                v.kit = nullptr;
+            continue;
+        }
 
         const float* sL = v.sample->buffer.getReadPointer (0);
         const float* sR = v.sample->buffer.getReadPointer (1);
@@ -375,6 +408,78 @@ void ChopShopProcessor::renderVoices (float* L, float* R, int start, int num)
         if (! v.active)
             v.kit = nullptr; // the kit stays alive in the garbage list; freed on the message thread
     }
+}
+
+void ChopShopProcessor::renderStretched (Voice& v, float* L, float* R, int start, int num)
+{
+    const float* sL = v.sample->buffer.getReadPointer (0);
+    const float* sR = v.sample->buffer.getReadPointer (1);
+    const double dir = v.reverse ? -1.0 : 1.0;
+    const double timeInc = v.baseRate / stretchT * dir;
+    const double pitchInc = v.inc * dir;
+    const float phInc = 1.0f / grainLen;
+    const int lo = v.start, hi = v.end - 1;
+
+    auto readAt = [&] (double pos, float& outL, float& outR)
+    {
+        if (pos < (double) lo || pos > (double) hi)
+        {
+            outL = outR = 0.0f; // grains never bleed into neighbouring slices
+            return;
+        }
+        const int ip = (int) pos;
+        const float f = (float) (pos - ip);
+        const int i0 = juce::jmax (lo, ip - 1), i2 = juce::jmin (hi, ip + 1), i3 = juce::jmin (hi, ip + 2);
+        outL = fx::hermite (sL[i0], sL[ip], sL[i2], sL[i3], f);
+        outR = fx::hermite (sR[i0], sR[ip], sR[i2], sR[i3], f);
+    };
+
+    for (int i = start; i < start + num; ++i)
+    {
+        if (v.reverse ? v.srcPos < (double) v.start : v.srcPos >= (double) v.end)
+        {
+            v.active = false;
+            break;
+        }
+
+        float accL = 0.0f, accR = 0.0f;
+        for (int g = 0; g < 2; ++g)
+        {
+            if (v.grainPh[g] >= 1.0f)
+            {
+                v.grainPh[g] -= 1.0f;
+                v.grainRp[g] = v.srcPos;
+            }
+            const float w = std::sin (juce::MathConstants<float>::pi * v.grainPh[g]);
+            float gl, gr;
+            readAt (v.grainRp[g], gl, gr);
+            accL += gl * w * w; // two sin^2 windows half a grain apart sum to 1
+            accR += gr * w * w;
+            v.grainRp[g] += pitchInc;
+            v.grainPh[g] += phInc;
+        }
+
+        const float played = (float) (v.reverse ? v.end - v.srcPos : v.srcPos - v.start);
+        const float remaining = (float) (v.reverse ? v.srcPos - v.start : v.end - v.srcPos);
+        const float declick = juce::jmin (1.0f, played / v.fadeIn) * juce::jmin (1.0f, remaining / v.fadeOut);
+        const float env = v.env.getNextSample() * declick;
+        L[i] += accL * v.gainL * env;
+        R[i] += accR * v.gainR * env;
+
+        if (! v.env.isActive())
+        {
+            v.active = false;
+            break;
+        }
+        v.srcPos += timeInc;
+        v.pos = v.srcPos; // playhead display follows the time position
+    }
+}
+
+void ChopShopProcessor::setSourceBpmFor (const SampleData& s)
+{
+    if (auto* prm = apvts.getParameter ("strBpm"))
+        prm->setValueNotifyingHost (prm->convertTo0to1 ((float) slicer::estimateBpm (s)));
 }
 
 //==============================================================================
@@ -482,6 +587,7 @@ bool ChopShopProcessor::loadMainSample (const juce::File& file)
     k->resetMap();
     stampChopSettings (*k);
     publishKit (k);
+    setSourceBpmFor (*s);
     return true;
 }
 
@@ -494,6 +600,7 @@ void ChopShopProcessor::loadDemo()
     k->resetMap();
     stampChopSettings (*k);
     publishKit (k);
+    setSourceBpmFor (*s);
 }
 
 bool ChopShopProcessor::loadPadSample (int pad, const juce::File& file)

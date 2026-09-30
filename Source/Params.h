@@ -14,6 +14,8 @@ inline const juce::StringArray stutterRates { "1/4", "1/8", "1/8T", "1/16", "1/1
 inline constexpr double stutterBeats[]      { 1.0, 0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125 };
 inline const juce::StringArray halfLengths  { "1 Beat", "2 Beats", "1 Bar", "2 Bars" };
 inline constexpr double halfBeats[]         { 1.0, 2.0, 4.0, 8.0 };
+inline const juce::StringArray driveTypes   { "Tape", "Tube", "Fuzz" };
+inline const juce::StringArray stretchModes { "Manual", "Sync" };
 inline const juce::StringArray delayTimes   { "1/16", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2" };
 inline constexpr double delayBeats[]        { 0.25, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0 };
 
@@ -61,7 +63,9 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     };
 
     // Master / envelope
-    addFloat ("master", "Master", { -36.0f, 6.0f, 0.1f }, 0.0f, fmtDb);
+    addFloat ("master", "Master", { -36.0f, 12.0f, 0.1f }, 0.0f, fmtDb);
+    addBool ("limOn", "Limiter", true);
+    addFloat ("limCeil", "Limiter Ceiling", { -12.0f, 0.0f, 0.1f }, -0.3f, fmtDb);
     addFloat ("attack", "Attack", skewed (0.0f, 2000.0f, 60.0f), 0.0f, fmtMs);
     addFloat ("decay", "Decay", skewed (1.0f, 4000.0f, 300.0f), 600.0f, fmtMs);
     addFloat ("sustain", "Sustain", { 0.0f, 1.0f }, 1.0f, fmtPct);
@@ -106,6 +110,25 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     addFloat ("stopTime", "Stop Time", skewed (0.05f, 4.0f, 0.8f), 0.8f, fmtSec);
     addFloat ("stopCurve", "Stop Curve", { 0.0f, 1.0f }, 0.4f, fmtPct);
     addFloat ("stopSpin", "Spin Up", { 0.0f, 2.0f }, 0.25f, [] (float v) { return v < 0.01f ? juce::String ("Off") : fmtSec (v); });
+
+    // Time-stretch (applies to the chopped main sample)
+    addBool ("strOn", "Stretch", false);
+    addChoice ("strMode", "Stretch Mode", stretchModes, 1);
+    addFloat ("strRatio", "Stretch Ratio", skewed (0.25f, 4.0f, 1.0f, 0.01f), 1.0f,
+              [] (float v) { return juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) + juce::String (v, 2); });
+    addFloat ("strBpm", "Source BPM", { 40.0f, 240.0f, 0.1f }, 92.0f, [] (float v) { return juce::String (v, 1); });
+    addFloat ("strGrain", "Grain Size", { 20.0f, 200.0f, 1.0f }, 70.0f, fmtMs);
+
+    // Drive: saturation + tone
+    addBool ("drvOn", "Saturation", false);
+    addFloat ("drvAmt", "Drive", { 0.0f, 1.0f }, 0.35f, fmtPct);
+    addChoice ("drvType", "Saturation Type", driveTypes, 0);
+    addFloat ("drvMix", "Saturation Mix", { 0.0f, 1.0f }, 1.0f, fmtPct);
+    addBool ("toneOn", "Tone", false);
+    addFloat ("toneTilt", "Tilt", { -1.0f, 1.0f, 0.01f }, 0.0f,
+              [] (float v) { return std::abs (v) < 0.005f ? juce::String ("Flat") : (v > 0 ? "Bright " : "Dark ") + fmtPct (std::abs (v)); });
+    addFloat ("toneLow", "Low Cut", skewed (20.0f, 800.0f, 120.0f, 1.0f), 20.0f, [] (float v) { return v < 21.0f ? juce::String ("Off") : fmtHz (v); });
+    addFloat ("toneHigh", "High Cut", skewed (1000.0f, 20000.0f, 6000.0f, 10.0f), 20000.0f, [] (float v) { return v > 19900.0f ? juce::String ("Off") : fmtHz (v); });
 
     // Tape delay
     addBool ("dlyOn", "Delay", false);

@@ -51,6 +51,12 @@ public:
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float startAngle,
                            float endAngle, juce::Slider& s) override
     {
+        if ((bool) s.getProperties().getWithDefault ("box", false))
+        {
+            drawValueBox (g, juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h), pos, s);
+            return;
+        }
+
         const auto bounds = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).reduced (2.0f);
         const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
         const auto c = bounds.getCentre();
@@ -85,6 +91,52 @@ public:
         const auto base = c.getPointOnCircumference (bodyR * 0.3f, angle);
         g.setColour (col::text);
         g.drawLine ({ base, tip }, 2.2f);
+    }
+
+    /** MPC-screen style parameter box: caption, value, and a level bar along the bottom. */
+    void drawValueBox (juce::Graphics& g, juce::Rectangle<float> r, float pos, juce::Slider& s)
+    {
+        r = r.reduced (1.0f);
+        const bool active = s.isMouseOverOrDragging();
+        const bool bipolar = (bool) s.getProperties().getWithDefault ("bipolar", false);
+        const bool choice = (bool) s.getProperties().getWithDefault ("choice", false);
+        const auto accent = s.findColour (juce::Slider::rotarySliderFillColourId);
+
+        g.setColour (col::screen.brighter (active ? 0.08f : 0.0f));
+        g.fillRoundedRectangle (r, 4.0f);
+        g.setColour (active ? accent.withAlpha (0.8f) : col::panelEdge.brighter (0.15f));
+        g.drawRoundedRectangle (r, 4.0f, 1.0f);
+
+        auto bar = r.reduced (4.0f, 0.0f).removeFromBottom (5.0f).withTrimmedBottom (2.0f);
+        g.setColour (col::faint.withAlpha (0.5f));
+        g.fillRoundedRectangle (bar, 1.5f);
+        if (choice)
+        {
+            const int n = juce::jmax (1, (int) s.getMaximum() - (int) s.getMinimum() + 1);
+            const int sel = juce::roundToInt (s.getValue() - s.getMinimum());
+            const float segW = bar.getWidth() / (float) n;
+            g.setColour (accent);
+            g.fillRoundedRectangle (bar.withX (bar.getX() + segW * (float) sel).withWidth (juce::jmax (2.0f, segW - 1.0f)), 1.5f);
+        }
+        else
+        {
+            const float from = bipolar ? 0.5f : 0.0f;
+            const float a = juce::jmin (from, pos), b = juce::jmax (from, pos);
+            g.setColour (accent);
+            g.fillRoundedRectangle (bar.withX (bar.getX() + bar.getWidth() * a).withWidth (juce::jmax (2.0f, bar.getWidth() * (b - a))), 1.5f);
+        }
+
+        auto text = r.reduced (6.0f, 3.0f).withTrimmedBottom (4.0f);
+        g.setColour (col::dim);
+        g.setFont (font (9.0f, true));
+        g.drawText (s.getProperties().getWithDefault ("caption", "").toString(), text.removeFromTop (11.0f),
+                    juce::Justification::centredLeft);
+        g.setColour (active ? col::amber : col::text);
+        g.setFont (font (juce::jlimit (10.0f, 14.0f, r.getHeight() * 0.3f), true));
+        auto value = s.getTextFromValue (s.getValue());
+        if (choice)
+            value << juce::String (juce::CharPointer_UTF8 (" \xe2\x96\xbe"));
+        g.drawFittedText (value, text.toNearestInt(), juce::Justification::centred, 1, 0.75f);
     }
 
     void drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down) override
@@ -206,5 +258,151 @@ private:
     juce::String caption;
     bool hovered = false;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+};
+//==============================================================================
+/** Rectangular parameter box (drag up/down or left/right; double-click resets; choice
+    parameters also open a menu on click). */
+class ValueBox : public juce::Component
+{
+public:
+    explicit ValueBox (juce::String caption, bool bipolar = false, juce::Colour colour = col::accent)
+    {
+        slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        slider.setMouseDragSensitivity (220);
+        slider.getProperties().set ("box", true);
+        slider.getProperties().set ("caption", caption);
+        slider.getProperties().set ("bipolar", bipolar);
+        slider.setColour (juce::Slider::rotarySliderFillColourId, colour);
+        slider.addMouseListener (this, false);
+        addAndMakeVisible (slider);
+    }
+
+    void attach (juce::AudioProcessorValueTreeState& state, const juce::String& id)
+    {
+        attachment.reset();
+        attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (state, id, slider);
+        choiceParam = dynamic_cast<juce::AudioParameterChoice*> (state.getParameter (id));
+        slider.getProperties().set ("choice", choiceParam != nullptr);
+        if (choiceParam != nullptr)
+            slider.setColour (juce::Slider::rotarySliderFillColourId, col::amber);
+        if (auto* prm = state.getParameter (id))
+        {
+            slider.setDoubleClickReturnValue (true, prm->convertFrom0to1 (prm->getDefaultValue()));
+            slider.setTooltip (prm->getName (64));
+        }
+        slider.repaint();
+    }
+
+    void resized() override { slider.setBounds (getLocalBounds()); }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (choiceParam == nullptr || e.getDistanceFromDragStart() > 2 || e.getNumberOfClicks() > 1)
+            return;
+        juce::PopupMenu m;
+        for (int i = 0; i < choiceParam->choices.size(); ++i)
+            m.addItem (i + 1, choiceParam->choices[i], true, i == choiceParam->getIndex());
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                         [safe = juce::Component::SafePointer<ValueBox> (this)] (int r)
+                         {
+                             if (safe != nullptr && r > 0)
+                                 safe->slider.setValue ((double) (r - 1), juce::sendNotificationSync);
+                         });
+    }
+
+    juce::Slider slider;
+
+private:
+    juce::AudioParameterChoice* choiceParam = nullptr;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+};
+
+//==============================================================================
+/** A titled box of sections; each section has an optional on/off switch and a grid of controls. */
+class ModuleBox : public juce::Component
+{
+public:
+    ModuleBox (juce::String titleIn, juce::String subtitleIn) : title (std::move (titleIn)), subtitle (std::move (subtitleIn)) {}
+
+    void addSection (const juce::String& name, juce::Component* toggle, std::vector<juce::Component*> items, int cols)
+    {
+        sections.push_back ({ name, toggle, items, juce::jmax (1, cols), {} });
+        if (toggle != nullptr)
+            addAndMakeVisible (toggle);
+        for (auto* c : items)
+            addAndMakeVisible (c);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (12, 10);
+        area.removeFromTop (34);
+        int totalRows = 0;
+        for (auto& s : sections)
+            totalRows += (int) (s.items.size() + (size_t) s.cols - 1) / s.cols;
+        const int headers = (int) sections.size() * 24 + ((int) sections.size() - 1) * 8;
+        const int rowH = juce::jlimit (36, 58, (area.getHeight() - headers) / juce::jmax (1, totalRows) - 6);
+
+        for (auto& s : sections)
+        {
+            auto header = area.removeFromTop (24);
+            s.header = header;
+            if (s.toggle != nullptr)
+                s.toggle->setBounds (header.removeFromRight (s.toggle->getProperties().getWithDefault ("wide", false) ? 76 : 52)
+                                         .withSizeKeepingCentre (s.toggle->getProperties().getWithDefault ("wide", false) ? 76 : 52, 19));
+            const int rows = (int) (s.items.size() + (size_t) s.cols - 1) / s.cols;
+            const int cw = area.getWidth() / s.cols;
+            for (int i = 0; i < (int) s.items.size(); ++i)
+            {
+                const int rr = i / s.cols, cc = i % s.cols;
+                juce::Rectangle<int> cell (area.getX() + cc * cw + 2, area.getY() + rr * (rowH + 6), cw - 4, rowH);
+                if (dynamic_cast<juce::ToggleButton*> (s.items[(size_t) i]) != nullptr)
+                    cell = cell.withSizeKeepingCentre (juce::jmin (cell.getWidth(), 92), 22); // switches keep pill size
+                s.items[(size_t) i]->setBounds (cell);
+            }
+            area.removeFromTop (rows * (rowH + 6) + 8);
+        }
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+        g.setColour (col::panel);
+        g.fillRoundedRectangle (r, 9.0f);
+        g.setColour (col::panelEdge);
+        g.drawRoundedRectangle (r.reduced (0.5f), 9.0f, 1.0f);
+
+        auto head = r.reduced (12.0f, 10.0f).removeFromTop (28.0f);
+        g.setColour (col::accent);
+        g.fillRoundedRectangle (head.getX(), head.getY() + 5.0f, 4.0f, 18.0f, 2.0f);
+        g.setColour (col::text);
+        g.setFont (font (18.0f, true));
+        g.drawText (title, head.withTrimmedLeft (12.0f), juce::Justification::centredLeft);
+        g.setColour (col::dim);
+        g.setFont (font (10.0f, true));
+        g.drawText (subtitle, head, juce::Justification::centredRight);
+        g.setColour (col::panelEdge.brighter (0.1f));
+        g.drawHorizontalLine ((int) head.getBottom() + 3, head.getX(), head.getRight());
+
+        for (auto& s : sections)
+        {
+            g.setColour (col::text.withAlpha (0.8f));
+            g.setFont (font (11.0f, true));
+            g.drawText (s.name, s.header.withTrimmedLeft (2), juce::Justification::centredLeft);
+        }
+    }
+
+private:
+    struct Section
+    {
+        juce::String name;
+        juce::Component* toggle;
+        std::vector<juce::Component*> items;
+        int cols;
+        juce::Rectangle<int> header;
+    };
+    juce::String title, subtitle;
+    std::vector<Section> sections;
 };
 } // namespace ui

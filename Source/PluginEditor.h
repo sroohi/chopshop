@@ -6,18 +6,20 @@
 #include "UI/WaveformView.h"
 #include "UI/LibraryPanel.h"
 
-class ChopShopEditor : public juce::AudioProcessorEditor,
-                       public juce::DragAndDropContainer,
-                       private juce::ChangeListener,
-                       private juce::Timer
+/** The whole interface at its native size; the editor scales it to fit the window. */
+class MainView : public juce::Component,
+                 private juce::ChangeListener,
+                 private juce::Timer
 {
 public:
-    explicit ChopShopEditor (ChopShopProcessor&);
-    ~ChopShopEditor() override;
+    static constexpr int W = 1496, H = 880;
+
+    explicit MainView (ChopShopProcessor&);
+    ~MainView() override;
 
     void paint (juce::Graphics&) override;
     void resized() override;
-    bool keyStateChanged (bool isKeyDown) override;
+    bool handleKeys();
 
 private:
     using APVTS = juce::AudioProcessorValueTreeState;
@@ -27,55 +29,79 @@ private:
     void bindPad (int pad);
     void refreshKit();
     void attachButton (juce::Button&, const juce::String& id);
-    void layoutKnobs (juce::Rectangle<int> area, std::initializer_list<juce::Component*> comps);
+    void paintMeters (juce::Graphics&);
 
     ChopShopProcessor& proc;
-    ui::ChopLookAndFeel lnf;
-    juce::TooltipWindow tooltips { this, 600 };
-
-    struct Panel { juce::Rectangle<int> bounds; juce::String title; };
-    std::vector<Panel> panels;
 
     // Top bar
     juce::TextButton loadBtn { "LOAD" }, demoBtn { "DEMO" };
-    juce::Label info, bpmLabel;
+    juce::ToggleButton limOn { "LIMITER" };
+    ui::ValueBox limCeil { "CEILING" };
     ui::Knob master { "MASTER" };
     std::unique_ptr<juce::FileChooser> chooser;
+    float meterL = 0.0f, meterR = 0.0f, meterGr = 0.0f;
 
     LibraryPanel library;
 
-    // Sample / slicer
+    // Monitor
     WaveformView wave;
-    ui::Knob sliceMode { "MODE" }, sliceCount { "SLICES" }, sliceSens { "SENS" };
-    juce::TextButton shuffleBtn { "SHUFFLE" }, resetMapBtn { "RESET MAP" }, rechopBtn { "RE-CHOP" };
-    juce::Label sliceHint;
-
-    // Pads
-    PadGrid pads;
-    ui::Knob padTune { "TUNE", true }, padLevel { "LEVEL" }, padPan { "PAN", true }, padMode { "MODE" };
+    ui::ValueBox padTune { "TUNE", true }, padLevel { "LEVEL" }, padPan { "PAN", true }, padMode { "PLAY" };
+    ui::ValueBox att { "ATTACK" }, dec { "DECAY" }, sus { "SUSTAIN" }, rel { "RELEASE" };
     juce::ToggleButton padRev { "REVERSE" };
     std::unique_ptr<APVTS::ButtonAttachment> padRevAtt;
 
-    ui::Knob att { "ATTACK" }, dec { "DECAY" }, sus { "SUSTAIN" }, rel { "RELEASE" };
+    PadGrid pads;
 
-    juce::ToggleButton rndOn { "ON" };
-    ui::Knob rndPitch { "PITCH" }, rndPan { "PAN" }, rndLevel { "LEVEL" }, rndRev { "REVERSE" }, rndSlice { "SLICE" };
+    // MAIN box
+    ui::ModuleBox mainBox { "MAIN", "HALF-TIME  /  STRETCH  /  SLICER" };
+    juce::ToggleButton halfOn { "ON" }, strOn { "ON" };
+    ui::ValueBox halfLen { "LENGTH" }, halfMix { "MIX" };
+    ui::ValueBox strMode { "MODE" }, strRatio { "RATIO" }, strBpm { "SRC BPM" }, strGrain { "GRAIN" };
+    ui::ValueBox sliceMode { "MODE" }, sliceCount { "SLICES" }, sliceSens { "SENSITIVITY" };
+    juce::TextButton shuffleBtn { "SHUFFLE" }, resetMapBtn { "RESET MAP" }, rechopBtn { "RE-CHOP" };
 
-    // Performance
-    juce::TextButton stutBtn { "STUTTER" }, halfBtn { "HALF-TIME" }, stopBtn { "TAPE STOP" };
-    ui::Knob stutRate { "RATE" }, stutGate { "GATE" }, stutMix { "MIX" };
-    ui::Knob halfLen { "LENGTH" }, halfMix { "MIX" };
-    ui::Knob stopTime { "TIME" }, stopCurve { "CURVE" }, stopSpin { "SPIN-UP" };
+    // FX box
+    ui::ModuleBox fxBox { "FX", "WIDENER  /  RANDOMIZER  /  STUTTER" };
+    juce::ToggleButton widOn { "ON" }, rndOn { "ON" }, stutOn { "ON" }, stopOn { "ON" }, widBass { "MONO LOW" };
+    ui::ValueBox widWidth { "WIDTH" }, widHaas { "HAAS" };
+    ui::ValueBox rndPitch { "PITCH" }, rndPan { "PAN" }, rndLevel { "LEVEL" }, rndRev { "REVERSE" }, rndSlice { "SLICE" };
+    ui::ValueBox stutRate { "RATE" }, stutGate { "GATE" }, stutMix { "MIX" };
+    ui::ValueBox stopTime { "TIME" }, stopCurve { "CURVE" }, stopSpin { "SPIN-UP" };
 
-    // FX
-    juce::ToggleButton dlyOn { "ON" }, revOn { "ON" }, widOn { "ON" }, widBass { "MONO LOW" }, vinOn { "ON" };
-    ui::Knob dlyTime { "TIME" }, dlyFb { "FEEDBACK" }, dlyWow { "WOW" }, dlyTone { "TONE" }, dlyAge { "AGE" }, dlyMix { "MIX" };
-    ui::Knob revSize { "SIZE" }, revDecay { "DECAY" }, revPre { "PRE-DLY" }, revTone { "TONE" }, revWow { "WOW" }, revMix { "MIX" };
-    ui::Knob widWidth { "WIDTH" }, widHaas { "HAAS" };
-    ui::Knob vinBits { "BITS" }, vinRate { "RATE" };
+    // EFFECT box
+    ui::ModuleBox effectBox { "EFFECT", "TAPE DELAY  /  TAPE REVERB" };
+    juce::ToggleButton dlyOn { "ON" }, revOn { "ON" };
+    ui::ValueBox dlyTime { "TIME" }, dlyFb { "FEEDBACK" }, dlyWow { "WOW" }, dlyTone { "TONE" }, dlyAge { "AGE" }, dlyMix { "MIX" };
+    ui::ValueBox revSize { "SIZE" }, revDecay { "DECAY" }, revPre { "PRE-DELAY" }, revTone { "TONE" }, revWow { "WOW" }, revMix { "MIX" };
+
+    // DRIVE box
+    ui::ModuleBox driveBox { "DRIVE", "SATURATION  /  TONE" };
+    juce::ToggleButton drvOn { "ON" }, toneOn { "ON" }, vinOn { "ON" };
+    ui::ValueBox drvAmt { "DRIVE" }, drvType { "TYPE" }, drvMix { "MIX" };
+    ui::ValueBox toneTilt { "TILT", true }, toneLow { "LOW CUT" }, toneHigh { "HIGH CUT" };
+    ui::ValueBox vinBits { "BITS" }, vinRate { "RATE" };
 
     std::vector<std::unique_ptr<APVTS::ButtonAttachment>> buttonAtts;
     std::array<bool, 16> keysDown {};
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainView)
+};
+
+//==============================================================================
+class ChopShopEditor : public juce::AudioProcessorEditor,
+                       public juce::DragAndDropContainer
+{
+public:
+    explicit ChopShopEditor (ChopShopProcessor&);
+    ~ChopShopEditor() override;
+
+    void resized() override;
+    bool keyStateChanged (bool) override { return view.handleKeys(); }
+
+private:
+    ui::ChopLookAndFeel lnf;
+    juce::TooltipWindow tooltips { this, 600 };
+    MainView view;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChopShopEditor)
 };

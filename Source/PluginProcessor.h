@@ -74,6 +74,8 @@ public:
     std::atomic<int> playheadPos { -1 };
     std::atomic<double> currentBpm { 120.0 };
     std::atomic<bool> perfActive[3];
+    std::atomic<float> outPeak[2];      // linear, post-limiter
+    std::atomic<float> gainReduction { 0.0f }; // dB, positive
 
     juce::AudioProcessorValueTreeState apvts;
     juce::AudioFormatManager formatManager;
@@ -92,6 +94,12 @@ private:
         float fadeIn = 16.0f, fadeOut = 64.0f;
         juce::ADSR env;
         juce::uint64 age = 0;
+
+        // Time-stretch (granular): srcPos advances with time, grains read at pitch speed.
+        bool stretched = false;
+        double baseRate = 1.0, srcPos = 0.0;
+        double grainRp[2] {};
+        float grainPh[2] {};
     };
 
     struct PadParams
@@ -118,6 +126,8 @@ private:
     void handleMidi (const juce::MidiMessage&, const Kit&);
     void triggerPad (int pad, float velocity, int note, float extraSemis, const Kit&);
     void renderVoices (float* L, float* R, int start, int num);
+    void renderStretched (Voice&, float* L, float* R, int start, int num);
+    void setSourceBpmFor (const SampleData&);
 
     std::atomic<float>* p (const char* id) const { return apvts.getRawParameterValue (id); }
 
@@ -143,6 +153,8 @@ private:
     double hostRate = 44100.0;
     juce::Random random;
     juce::SmoothedValue<float> masterGain;
+    double stretchT = 1.0;   // time scale for stretched voices (>1 = slower)
+    float grainLen = 3000.0f;
 
     fx::Vintage vintage;
     fx::Stutter stutter;
@@ -151,6 +163,9 @@ private:
     fx::TapeReverb tapeReverb;
     fx::TapeStop tapeStop;
     fx::Widener widener;
+    fx::Drive drive;
+    fx::ToneEQ tone;
+    fx::Limiter limiter;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChopShopProcessor)
 };
