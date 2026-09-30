@@ -121,6 +121,8 @@ private:
     void renderPreview (float* L, float* R, int n, SampleData* s);
     std::vector<int> chop (const SampleData&) const;
     void stampChopSettings (Kit&) const;
+    void publishChopped (Kit::Ptr);          // chop k->main, reset the pad map and publish
+    void setMainSample (SampleData::Ptr);
     void restoreKit (const juce::ValueTree&);
 
     void handleMidi (const juce::MidiMessage&, const Kit&);

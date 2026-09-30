@@ -541,7 +541,7 @@ void ChopShopProcessor::timerCallback()
 
 bool ChopShopProcessor::isSupportedAudioFile (const juce::String& path) const
 {
-    return juce::File (path).hasFileExtension ("wav;aif;aiff;flac;mp3;m4a;caf;ogg");
+    return juce::File (path).hasFileExtension (params::audioExtensions);
 }
 
 SampleData::Ptr ChopShopProcessor::readAudioFile (const juce::File& file, double maxSeconds)
@@ -576,32 +576,32 @@ void ChopShopProcessor::stampChopSettings (Kit& k) const
     k.chopSens = p ("sliceSens")->load();
 }
 
+void ChopShopProcessor::publishChopped (Kit::Ptr k)
+{
+    k->slices = chop (*k->main);
+    k->resetMap();
+    stampChopSettings (*k);
+    publishKit (k);
+}
+
+void ChopShopProcessor::setMainSample (SampleData::Ptr s)
+{
+    auto k = copyKit();
+    k->main = s;
+    publishChopped (k);
+    setSourceBpmFor (*s);
+}
+
 bool ChopShopProcessor::loadMainSample (const juce::File& file)
 {
     auto s = readAudioFile (file);
     if (s == nullptr)
         return false;
-    auto k = copyKit();
-    k->main = s;
-    k->slices = chop (*s);
-    k->resetMap();
-    stampChopSettings (*k);
-    publishKit (k);
-    setSourceBpmFor (*s);
+    setMainSample (s);
     return true;
 }
 
-void ChopShopProcessor::loadDemo()
-{
-    auto s = makeDemoBreak();
-    auto k = copyKit();
-    k->main = s;
-    k->slices = chop (*s);
-    k->resetMap();
-    stampChopSettings (*k);
-    publishKit (k);
-    setSourceBpmFor (*s);
-}
+void ChopShopProcessor::loadDemo() { setMainSample (makeDemoBreak()); }
 
 bool ChopShopProcessor::loadPadSample (int pad, const juce::File& file)
 {
@@ -665,11 +665,7 @@ void ChopShopProcessor::rechop (bool force)
     if (! force && mode == current->chopMode && count == current->chopCount && std::abs (sens - current->chopSens) < 1.0e-4f)
         return;
 
-    auto k = copyKit();
-    k->slices = chop (*k->main);
-    k->resetMap();
-    stampChopSettings (*k);
-    publishKit (k);
+    publishChopped (copyKit());
 }
 
 void ChopShopProcessor::parameterChanged (const juce::String&, float) { triggerAsyncUpdate(); }

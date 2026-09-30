@@ -5,6 +5,7 @@
 #include "UI/PadGrid.h"
 #include "UI/WaveformView.h"
 #include "UI/LibraryPanel.h"
+#include "SpliceSearch.h"
 
 /** The whole interface at its native size; the editor scales it to fit the window. */
 class MainView : public juce::Component,
@@ -30,6 +31,7 @@ private:
     void refreshKit();
     void attachButton (juce::Button&, const juce::String& id);
     void paintMeters (juce::Graphics&);
+    void showSearch (bool);
 
     ChopShopProcessor& proc;
 
@@ -42,6 +44,11 @@ private:
     float meterL = 0.0f, meterR = 0.0f, meterGr = 0.0f;
 
     LibraryPanel library;
+
+    // "Ask Claude" Splice search: replaces the MAIN and FX boxes while open.
+    juce::TextButton askBtn { "ASK CLAUDE" };
+    ui::ModuleBox searchBox { "ASK CLAUDE", "SPLICE SEARCH  /  DOWNLOAD" };
+    splice::SearchPanel search;
 
     // Monitor
     WaveformView wave;

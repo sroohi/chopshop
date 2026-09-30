@@ -322,7 +322,7 @@ private:
         {
             if (! root.dir.isDirectory())
                 continue;
-            for (const auto& entry : juce::RangedDirectoryIterator (root.dir, true, "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a;*.caf;*.ogg"))
+            for (const auto& entry : juce::RangedDirectoryIterator (root.dir, true, params::audioWildcard))
             {
                 if (threadShouldExit() || found.size() >= 20000)
                     break;

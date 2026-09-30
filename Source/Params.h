@@ -8,6 +8,10 @@ inline constexpr int numPads = 16;
 
 inline juce::String padId (int pad, const char* what) { return "p" + juce::String (pad + 1) + "_" + what; }
 
+// Sample formats ChopShop loads: "wav;aif;..." for File::hasFileExtension, "*.wav;*.aif;..." for choosers/iterators.
+inline const juce::String audioExtensions { "wav;aif;aiff;flac;mp3;m4a;caf;ogg" };
+inline const juce::String audioWildcard   { "*." + audioExtensions.replace (";", ";*.") };
+
 inline const juce::StringArray sliceModes   { "Equal", "Transient" };
 inline const juce::StringArray padModes     { "One Shot", "Note On" };
 inline const juce::StringArray stutterRates { "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" };

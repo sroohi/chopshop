@@ -232,10 +232,11 @@ int main (int argc, char** argv)
 
     std::cout << "== Library" << std::endl;
     juce::File librarySample;
+    const auto lib = LibraryPanel::libraryFolder();
+    const auto files = lib.findChildFiles (juce::File::findFiles, true, "*.wav");
+    check (files.size() > 0, juce::String (files.size()) + " samples in " + lib.getFullPathName());
+    if (! files.isEmpty()) // the rest needs at least one sample
     {
-        auto lib = LibraryPanel::libraryFolder();
-        auto files = lib.findChildFiles (juce::File::findFiles, true, "*.wav");
-        check (files.size() > 0, juce::String (files.size()) + " samples in " + lib.getFullPathName());
         for (auto& f : files)
             if (f.getFileName().contains ("Kick-Snare")) librarySample = f;
         if (librarySample.existsAsFile())

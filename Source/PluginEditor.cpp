@@ -29,7 +29,7 @@ MainView::MainView (ChopShopProcessor& p)
     loadBtn.onClick = [this]
     {
         chooser = std::make_unique<juce::FileChooser> ("Load a sample to chop", LibraryPanel::libraryFolder(),
-                                                       "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a;*.caf;*.ogg");
+                                                       params::audioWildcard);
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                               [this] (const juce::FileChooser& fc)
                               {
@@ -145,7 +145,19 @@ MainView::MainView (ChopShopProcessor& p)
 
     show ({ &mainBox, &fxBox, &effectBox, &driveBox });
 
-    for (auto* b : std::initializer_list<juce::Button*> { &loadBtn, &demoBtn, &shuffleBtn, &resetMapBtn, &rechopBtn, &padRev })
+    // Ask Claude (Splice search via the /splice-bridge Claude Code session)
+    askBtn.setClickingTogglesState (true);
+    askBtn.setTooltip ("Search Splice with Claude (needs /splice-bridge running in Claude Code)");
+    askBtn.onClick = [this] { showSearch (askBtn.getToggleState()); };
+    search.getHostBpm = [this] { return proc.currentBpm.load(); };
+    search.onPreview = [this] (const juce::File& f) { proc.previewFile (f); };
+    search.onLoadMain = [this] (const juce::File& f) { proc.stopPreview(); proc.loadMainSample (f); library.rescan(); };
+    search.onLoadPad = [this] (const juce::File& f) { proc.stopPreview(); proc.loadPadSample (proc.getSelectedPad(), f); library.rescan(); };
+    addAndMakeVisible (askBtn);
+    addChildComponent (searchBox);
+    addChildComponent (search);
+
+    for (auto* b : std::initializer_list<juce::Button*> { &loadBtn, &demoBtn, &askBtn, &shuffleBtn, &resetMapBtn, &rechopBtn, &padRev })
         b->setWantsKeyboardFocus (false);
     for (auto& a : buttonAtts)
         juce::ignoreUnused (a);
@@ -180,6 +192,14 @@ void MainView::bindPad (int pad)
     padRevAtt = std::make_unique<APVTS::ButtonAttachment> (s, params::padId (pad, "rev"), padRev);
     wave.repaint();
     repaint (monitorBounds);
+}
+
+void MainView::showSearch (bool on)
+{
+    mainBox.setVisible (! on);
+    fxBox.setVisible (! on);
+    searchBox.setVisible (on);
+    search.setVisible (on);
 }
 
 void MainView::refreshKit()
@@ -242,6 +262,7 @@ void MainView::resized()
     limOn.setBounds (W - 16 - 66 - 104 - 96, 14, 88, 20);
 
     library.setBounds (libX + 10, top + 30, libW - 20, H - top - 16 - 40);
+    askBtn.setBounds (libX + libW - 12 - 92, top + 7, 92, 22);
 
     // Monitor: screen with header, waveform and the selected pad's settings.
     {
@@ -264,6 +285,8 @@ void MainView::resized()
 
     mainBox.setBounds (boxX, top, boxW, boxH);
     fxBox.setBounds (boxX + boxW + gap, top, boxW, boxH);
+    searchBox.setBounds (boxX, top, boxW * 2 + gap, boxH);
+    search.setBounds (searchBox.getBounds().reduced (12, 10).withTrimmedTop (44));
     effectBox.setBounds (boxX, top + boxH + gap, boxW, boxH);
     driveBox.setBounds (boxX + boxW + gap, top + boxH + gap, boxW, boxH);
 }

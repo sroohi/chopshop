@@ -192,7 +192,7 @@ private:
     void chooseFile (int pad)
     {
         chooser = std::make_unique<juce::FileChooser> ("Load sample to pad " + juce::String (pad + 1), juce::File(),
-                                                       "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a;*.caf;*.ogg");
+                                                       params::audioWildcard);
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                               [this, pad] (const juce::FileChooser& fc)
                               {
